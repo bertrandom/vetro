@@ -296,7 +296,36 @@ def render_live(slug, path):
     _render(LIVE[slug], _phosphor("television-simple-bold", 66), path)
 
 
+# Tiles for the HDMI inputs named after the device on them, each given the dock's corner radius and rim like every
+# other icon. Most are the device's app icon from Google Play, saved at 512 px.
+#   shield  NVIDIA's "SHIELD TV" app (com.nvidia.shield.remote)        -> HDMI 1
+#   snes    a Super Nintendo icon from Dribbble (userupload 21008147),  -> HDMI 2
+#           squared up: the purple background extended and the console's cut-off bottom given round corners
+#   xbox    Microsoft's "XBOX" app (com.microsoft.xboxone.smartglass)  -> HDMI 4
+#   plex    Plex's app (com.plexapp.android)                           -> HDMI 1, the Shield, with an MQTT message
+#   netflix Netflix's app (com.netflix.mediaclient)                     -> HDMI 1, the Shield, with an MQTT message
+_GLYPHS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "glyphs")
+DEVICE_ICONS = {"shield": "shield-play-icon.png", "snes": "snes-icon.png", "xbox": "xbox-play-icon.png", "plex": "plex-play-icon.png", "netflix": "netflix-play-icon.png"}
+
+
+def render_device(slug, path):
+    big = SIZE * SS
+    out = Image.open(os.path.join(_GLYPHS, DEVICE_ICONS[slug])).convert("RGBA").resize((big, big), Image.LANCZOS)
+    rim = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(rim).rounded_rectangle((0, 0, big - 1, big - 1), radius=CORNER * SS, outline=(255, 255, 255, RIM_ALPHA), width=max(1, round(SIZE / OUT * SS)))
+    out = Image.alpha_composite(out, rim)
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, big - 1, big - 1), radius=CORNER * SS, fill=255)
+    out.putalpha(ImageChops.multiply(out.getchannel("A"), mask))
+    out = out.resize((OUT, OUT), Image.LANCZOS)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    out.save(path)
+
+
 def render_all(icons_dir):
+    for slug in DEVICE_ICONS:
+        render_device(slug, os.path.join(icons_dir, slug + ".png"))
+
     for slug in LIVE:
         render_live(slug, os.path.join(icons_dir, slug + ".png"))
     for slug in SYSTEM:

@@ -42,6 +42,8 @@ function Dock(options) {
     this.dir = options.dir || path.join(__dirname, '..', 'native', 'dock');
     this.stateFile = options.stateFile || STATE_FILE;
     this.appsFile = options.appsFile || APPS_FILE;
+    // Vetro's own port: the dock reports tile presses to it (POST /dock/pressed).
+    this.notifyPort = options.notifyPort || null;
     this.sleep = options.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
     this.now = options.now || Date.now;
     this.uptime = options.uptime || function () { return os.uptime(); };
@@ -167,7 +169,8 @@ Dock.prototype.statusNow = function () {
 Dock.prototype.startScript = function () {
     var env = 'HOME=/home/owner XDG_RUNTIME_DIR=/run WAYLAND_DISPLAY=wayland-0 TVLAUNCHER_ENGINE=egl TVLAUNCHER_DIR=' + RUN_DIR;
     var args = DLL + ' --apps ' + q(this.appsFile) + ' --inputs ' + q(path.join(this.dir, 'res', 'inputs.tsv')) +
-        ' --hidden --home-code ' + HOME_CODE + ' --kill-on-home ' + HOME_APP;
+        ' --hidden --home-code ' + HOME_CODE + ' --kill-on-home ' + HOME_APP +
+        (this.notifyPort ? ' --notify-port ' + (this.notifyPort | 0) : '');
     return [
         this.stopLines(),
         'rm -f ' + FIFO,

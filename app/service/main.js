@@ -12,6 +12,10 @@ var control = require('./control.js');
 var packageInfo = require('./package-info.js');
 var platform = require('./platform.js');
 var buildInfo = require('./build-info.js');
+// Defined up here: the launcher below is handed it to report tile presses back to us.
+// The package builder writes a non-default port into build-info.js (VETRO_PORT=... node build.cjs);
+// VETRO_PORT at run time still wins for local runs.
+var PORT = Number(process.env.VETRO_PORT) || buildInfo.port || 8099;
 var apps = require('./apps.js');
 var probe = require('./probe.js');
 var remap = require('./remap.js');
@@ -25,7 +29,7 @@ var monitor = new SystemMonitor(agentExecute);
 var ComponentActions = require('./component-actions.js');
 var dnsFilter = new (require('./local-dns.js').Filter)(agentExecute);
 var homeOrder = new (require('./home-order.js').Order)(agentExecute);
-var dock = new (require('./dock.js').Dock)({execute: agentExecute});
+var dock = new (require('./dock.js').Dock)({execute: agentExecute, notifyPort: PORT});
 var hbbtv = new (require('./hbbtv.js').Control)(agentExecute);
 var wins = new (require('./quick-wins.js').Wins)(agentExecute);
 var presence = new (require('./presence.js').Presence)(agentExecute);
@@ -36,9 +40,6 @@ var quickSettings = require('./quick-settings.js');
 var leftovers = new (require('./leftovers.js').Leftovers)(agentExecute);
 // Components whose disabled flag Vetro may change: verified ACR set plus Quick Settings groups.
 var TOGGLE_IDS = debloat.VERIFIED_GLOBAL_IDS.concat(quickSettings.ALLOWED_IDS);
-// The package builder writes a non-default port into build-info.js (VETRO_PORT=... node build.cjs);
-// VETRO_PORT at run time still wins for local runs.
-var PORT = Number(process.env.VETRO_PORT) || buildInfo.port || 8099;
 
 // --- telemetry reader (service side, uid 5001) ---------------------------
 // Reads /proc and /sys directly via fs. No platform command is needed. Every read
@@ -575,6 +576,19 @@ function handleInput(req,res){
         }).catch(function(e){physical.stop();serveJson(res,{ok:false,error:e.message},503);});
     });
 }
+// The launcher reports each tile press here; a tile with an MQTT message (dock-catalog.js) publishes it.
+// Only the TV itself may call it, since it sends messages to the broker.
+function handleDockPressed(req,res){
+    if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].indexOf(req.socket && req.socket.remoteAddress) < 0) return serveJson(res,{error:'Tile presses are accepted from the TV only'},403);
+    readJsonBody(req,res,function(p){
+        if(typeof p.slug!=='string'||!/^[a-z0-9_-]{1,40}$/.test(p.slug))return serveJson(res,{error:'slug required'},400);
+        var m=require('./dock-catalog.js').tileMessage(p.slug);
+        if(!m)return serveJson(res,{ok:true,sent:0});
+        try{bridge.publish(m.topic,m.payload);bridge.event('trigger','Launcher tile '+p.slug+': message sent to '+m.topic);serveJson(res,{ok:true,sent:1});}
+        catch(e){bridge.event('error','Launcher tile '+p.slug+': '+e.message);serveJson(res,{ok:false,error:e.message},503);}
+    });
+}
+
 function handleRemapRun(req,res){readJsonBody(req,res,function(p){
     if(typeof p.type!=='string'||typeof p.value!=='string')return serveJson(res,{error:'type and value required'},400);
     runActions(remap.resolve(remapStore.rules,p.type,p.value,p.payload)).then(function(r){serveJson(res,r);}).catch(function(e){serveJson(res,{ok:false,error:e.message},503);});
@@ -618,6 +632,7 @@ http.createServer(function (req, res) {
         if (url === '/probe') return handleProbe(req, res);
         if (url === '/remap') return handleRemap(req, res);
         if (url === '/remap/run') return handleRemapRun(req, res);
+        if (url === '/dock/pressed') return handleDockPressed(req, res);
         return serveJson(res, { error: 'POST not supported here' }, 405);
     }
     if (url === '/dns') return dnsFilter.status().then(function(d){serveJson(res,d)}).catch(function(e){serveJson(res,{error:e.message},503)});

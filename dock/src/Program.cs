@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using System.Runtime.InteropServices;
 using Launcher.Core;
 using Launcher.Native;
@@ -76,8 +79,11 @@ namespace Launcher
 
         // ------------------------------------------------------------------ logging
 
+        private static readonly object LogLock = new object();
+
         private static void Log(string m)
         {
+            lock (LogLock)
             try { File.AppendAllText(_logPath, DateTime.Now.ToString("HH:mm:ss.fff") + " " + m + "\n"); } catch (Exception) { }
         }
 
@@ -651,7 +657,42 @@ namespace Launcher
                 return;
             }
             if (e.SourceType >= 0) SwitchSource(e); else Launch(e);
+            NotifyPressed(e);
             HideDock();
+        }
+
+        // --notify-port N: after a tile has done its own job, Vetro (listening on 127.0.0.1:N) is told which one was
+        // pressed, so it can add what the launcher cannot do itself, such as publishing an MQTT message. It runs on a
+        // pool thread with short timeouts, so a slow or stopped Vetro never holds up the dock.
+        private static int _notifyPort;
+
+        private static void NotifyPressed(AppEntry e)
+        {
+            if (_notifyPort <= 0) return;
+            string slug = e.Slug;   // letters, digits, '-' and '_' only (Catalog.IsSlug): safe inside the JSON below
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    byte[] body = Encoding.ASCII.GetBytes("{\"slug\":\"" + slug + "\"}");
+                    byte[] head = Encoding.ASCII.GetBytes("POST /dock/pressed HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: "
+                        + body.Length + "\r\nConnection: close\r\n\r\n");
+                    using (var c = new TcpClient())
+                    {
+                        if (!c.ConnectAsync("127.0.0.1", _notifyPort).Wait(1500)) { Log("notify " + slug + ": no answer from Vetro"); return; }
+                        c.SendTimeout = 1500; c.ReceiveTimeout = 3000;
+                        NetworkStream ns = c.GetStream();
+                        ns.Write(head, 0, head.Length);
+                        ns.Write(body, 0, body.Length);
+                        byte[] buf = new byte[64];
+                        int n = ns.Read(buf, 0, buf.Length);
+                        string status = Encoding.ASCII.GetString(buf, 0, n);
+                        int eol = status.IndexOf('\r');
+                        Log("notify " + slug + ": " + (eol > 0 ? status.Substring(0, eol) : status));
+                    }
+                }
+                catch (Exception ex) { Log("notify " + slug + ": " + ex.Message); }
+            });
         }
 
         private const string SourceIconDir = "/usr/apps/com.samsung.tv.theme-resource/shared/res/org.tizen.menu/Settings_Popup/device_icon/";
@@ -802,6 +843,8 @@ namespace Launcher
         {
             if (Flag(args, "--get-home")) return GetHome();
             _perf = Flag(args, "--perf");
+            int notifyPort;
+            if (int.TryParse(Arg(args, "--notify-port"), out notifyPort) && notifyPort > 0 && notifyPort < 65536) _notifyPort = notifyPort;
             _dir = ResolveDir(args);
             _logPath = Path.Combine(_dir, "tvlauncher.log");
             _pidPath = Path.Combine(_dir, "tvlauncher.pid");
@@ -840,7 +883,7 @@ namespace Launcher
                 int windowW = Math.Max(new DockLayout(_apps.Length, screenW, screenH).WinW, new DockLayout(_inputs.Length, screenW, screenH).WinW);
                 var layout = new DockLayout(_apps.Length, screenW, screenH, windowW, false, Catalog.GroupStart(_apps));
                 var inputsLayout = new DockLayout(_inputs.Length, screenW, screenH, windowW, true, -1);
-                _appsCtl = new Controller(layout) { PanelEnabled = true };
+                _appsCtl = new Controller(layout) { PanelEnabled = false };   // the row is the inputs: no Source page above it
                 _inputsCtl = new Controller(inputsLayout, PageKind.Panel);
                 _ctl = _appsCtl;
 
@@ -860,7 +903,7 @@ namespace Launcher
                 string res = Path.Combine(AppContext.BaseDirectory, "res");
                 string dumpIcons = Arg(args, "--dump-icons");
                 if (dumpIcons != null && Directory.Exists(dumpIcons)) Dock.DumpIconsTo = dumpIcons;
-                _appsDock = new Dock(_win, layout, _apps, res, Log, Design.HintText, true);
+                _appsDock = new Dock(_win, layout, _apps, res, Log, null, true);   // no "Source" hint
                 _appsDock.Build();
                 _inputsDock = new Dock(_win, inputsLayout, _inputs, res, Log, "Back", false);
                 _inputsDock.Build();

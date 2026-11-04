@@ -4,6 +4,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {Dock} = require('../service/dock.js');
+// These tests cover the Home-row apps, which the dock leaves out by default.
+require('../service/dock-catalog.js').showApps = true;
+
+// The dock is told Vetro's port so it can report tile presses; without one it is not.
+assert.ok(new Dock({notifyPort: 8099}).startScript().includes(' --kill-on-home com.samsung.tv.csfs --notify-port 8099 '), 'port passed to the dock');
+assert.ok(!new Dock({}).startScript().includes('--notify-port'));
 
 const hex = s => Buffer.from(s).toString('hex');
 const HOME_DATA = [
@@ -56,8 +62,8 @@ function fixture(options) {
     assert.equal(s.enabled, true);
     assert.equal(s.running, true);
     assert.equal(s.apps.count, 1);
-    assert.equal(fs.readFileSync(path.join(f.tmp, 'apps.tsv'), 'utf8').split('\n')[1],
-        'netflix\tNetflix\torg.tizen.netflix-app\t\t/opt/share/webappservice/apps_icon/all/aaa/224x224.png', 'the list the dock reads');
+    assert.equal(fs.readFileSync(path.join(f.tmp, 'apps.tsv'), 'utf8').split('\n')[6],
+        'netflix-2\tNetflix\torg.tizen.netflix-app\t\t/opt/share/webappservice/apps_icon/all/aaa/224x224.png', 'the list the dock reads');
     assert.ok(/tvlauncher-dotnet\.dll --apps '[^']+apps\.tsv' --inputs '[^']+inputs\.tsv' --hidden --home-code 63 --kill-on-home com\.samsung\.tv\.csfs/.test(f.tv.started),
         'the verified dock command line: ' + f.tv.started);
     assert.ok(f.tv.started.includes('TVLAUNCHER_DIR=/home/owner') && f.tv.started.includes('WAYLAND_DISPLAY=wayland-0') && f.tv.started.includes('setsid nohup /usr/bin/dotnet'));
@@ -222,9 +228,10 @@ function fixture(options) {
     assert.equal(s.fixTizenTube, true, 'turning the launcher on keeps the choice');
     let tsv = fs.readFileSync(path.join(f.tmp, 'apps.tsv'), 'utf8');
     assert.ok(tsv.includes('tizentube\tTizenTube\txvvl3S1TT1.TizenTubeStandalone\t\t/opt/share/webappservice/apps_icon/all/yt/224x224.png\tcom.samsung.tv.cobalt-yt'), 'YouTube icon and kill-first in the list');
-    assert.deepEqual(s.entries.map(e => e.slug), ['tizentube', 'netflix', 'settings', 'samsunghome']);
-    assert.equal(s.entries[0].killFirst, 'com.samsung.tv.cobalt-yt');
-    assert.equal(s.entries[2].system, true); assert.equal(s.entries[3].system, true); assert.equal(s.entries[1].system, false);
+    assert.deepEqual(s.entries.map(e => e.slug), ['netflix', 'plex', 'shield', 'snes', 'xbox', 'tizentube', 'netflix-2', 'settings', 'samsunghome']);
+    assert.deepEqual(s.entries.slice(0, 5).map(e => e.source), [13, 13, 13, 14, 16]); assert.equal(s.entries[0].system, false);
+    assert.equal(s.entries[5].killFirst, 'com.samsung.tv.cobalt-yt');
+    assert.equal(s.entries[7].system, true); assert.equal(s.entries[8].system, true); assert.equal(s.entries[6].system, false);
     s = await f.dock.setFixTizenTube(false);
     assert.equal(s.fixTizenTube, false);
     assert.equal(s.enabled, true, 'the launcher stays on');
@@ -243,7 +250,7 @@ function fixture(options) {
     assert.ok(f.dock.iconFile('settings').equals(png), 'a packaged icon is served');
     assert.equal(f.dock.iconFile('../settings'), null, 'no path tricks');
     assert.equal(f.dock.iconFile('nope'), null);
-    assert.equal(f.dock.iconFile('netflix'), null, 'an icon that is not readable here gives nothing, not an error');
+    assert.equal(f.dock.iconFile('netflix-2'), null, 'an icon that is not readable here gives nothing, not an error');
     fs.writeFileSync(f.dock.appsFile, '# x\nevil\tEvil\tx.evil\t\t/etc/passwd\nnet\tNet\tx.net\t\t/opt/usr/apps/a/../../b.png\n');
     assert.equal(f.dock.iconFile('evil'), null, 'a path outside the icon places is never read');
     assert.equal(f.dock.iconFile('net'), null, 'nor one with parent directories');
