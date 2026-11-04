@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using System.Runtime.InteropServices;
 using Launcher.Core;
 using Launcher.Native;
@@ -53,6 +56,10 @@ namespace Launcher
         // One process: a single shell runs every sleep and every kill (at 0.15, 0.45, 0.9, 1.6 and 2.8 s after the
         // press, as before), so the dock itself spawns once per Home press instead of five times from the loop.
         private static string _guardApp, _guardCmd;
+        // A Home press followed quickly by the Samsung Home pill would have the guard close the Home the pill just
+        // opened. Opening it from the dock leaves this file, and each pending kill checks for it first; the next
+        // Home press removes it, so the guard works as before from then on.
+        private static string _guardOffPath;
         private const double GuardFirst = 0.15;
         private static readonly double[] GuardGaps = { 0.3, 0.45, 0.7, 1.2 };   // sleeps between the five kills
         private static int _homeCode = -1;
@@ -72,8 +79,11 @@ namespace Launcher
 
         // ------------------------------------------------------------------ logging
 
+        private static readonly object LogLock = new object();
+
         private static void Log(string m)
         {
+            lock (LogLock)
             try { File.AppendAllText(_logPath, DateTime.Now.ToString("HH:mm:ss.fff") + " " + m + "\n"); } catch (Exception) { }
         }
 
@@ -595,14 +605,30 @@ namespace Launcher
         private static void ArmGuard()
         {
             if (_guardCmd == null) return;
+            try { if (_guardOffPath != null) File.Delete(_guardOffPath); }
+            catch (Exception ex) { Log("guard: " + ex.Message); }
             try { Libc.system(_guardCmd); }   // returns at once: the shell puts the whole chain in the background
             catch (Exception ex) { Log("guard: " + ex.Message); }
         }
 
-        /// <summary>The app id is plain id characters (checked at start), so it is safe on a command line.</summary>
-        private static string GuardCommand(string appId)
+        /// <summary>The dock opened the guarded app itself: the kills still pending from the last Home press skip it.</summary>
+        private static void CancelGuard()
         {
-            string kill = "/usr/bin/app_launcher -k " + appId;
+            if (_guardOffPath == null) return;
+            try { File.WriteAllText(_guardOffPath, ""); Log("guard: off until the next Home press"); }
+            catch (Exception ex) { Log("guard: " + ex.Message); }
+        }
+
+        private static string GuardOffPath(string dir)
+        {
+            return dir.IndexOf('\'') < 0 ? Path.Combine(dir, "tvlauncher.guard-off") : null;
+        }
+
+        /// <summary>The app id is plain id characters (checked at start), so it is safe on a command line.</summary>
+        private static string GuardCommand(string appId, string offPath)
+        {
+            // offPath is single-quoted; GuardOffPath refuses a folder with a quote in it.
+            string kill = (offPath != null ? "[ -e '" + offPath + "' ] || " : "") + "/usr/bin/app_launcher -k " + appId;
             var sb = new System.Text.StringBuilder("( sleep " + GuardFirst.ToString("0.0##", System.Globalization.CultureInfo.InvariantCulture) + "; " + kill);
             foreach (double gap in GuardGaps) sb.Append("; sleep ").Append(gap.ToString("0.0##", System.Globalization.CultureInfo.InvariantCulture)).Append("; ").Append(kill);
             return sb.Append(" ) >/dev/null 2>&1 &").ToString();
@@ -631,7 +657,42 @@ namespace Launcher
                 return;
             }
             if (e.SourceType >= 0) SwitchSource(e); else Launch(e);
+            NotifyPressed(e);
             HideDock();
+        }
+
+        // --notify-port N: after a tile has done its own job, Vetro (listening on 127.0.0.1:N) is told which one was
+        // pressed, so it can add what the launcher cannot do itself, such as publishing an MQTT message. It runs on a
+        // pool thread with short timeouts, so a slow or stopped Vetro never holds up the dock.
+        private static int _notifyPort;
+
+        private static void NotifyPressed(AppEntry e)
+        {
+            if (_notifyPort <= 0) return;
+            string slug = e.Slug;   // letters, digits, '-' and '_' only (Catalog.IsSlug): safe inside the JSON below
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    byte[] body = Encoding.ASCII.GetBytes("{\"slug\":\"" + slug + "\"}");
+                    byte[] head = Encoding.ASCII.GetBytes("POST /dock/pressed HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: "
+                        + body.Length + "\r\nConnection: close\r\n\r\n");
+                    using (var c = new TcpClient())
+                    {
+                        if (!c.ConnectAsync("127.0.0.1", _notifyPort).Wait(1500)) { Log("notify " + slug + ": no answer from Vetro"); return; }
+                        c.SendTimeout = 1500; c.ReceiveTimeout = 3000;
+                        NetworkStream ns = c.GetStream();
+                        ns.Write(head, 0, head.Length);
+                        ns.Write(body, 0, body.Length);
+                        byte[] buf = new byte[64];
+                        int n = ns.Read(buf, 0, buf.Length);
+                        string status = Encoding.ASCII.GetString(buf, 0, n);
+                        int eol = status.IndexOf('\r');
+                        Log("notify " + slug + ": " + (eol > 0 ? status.Substring(0, eol) : status));
+                    }
+                }
+                catch (Exception ex) { Log("notify " + slug + ": " + ex.Message); }
+            });
         }
 
         private const string SourceIconDir = "/usr/apps/com.samsung.tv.theme-resource/shared/res/org.tizen.menu/Settings_Popup/device_icon/";
@@ -707,6 +768,7 @@ namespace Launcher
                     Log("launch " + e.AppId + " after closing " + e.KillFirst + " rc=" + rc);
                     return;
                 }
+                if (e.AppId == _guardApp) CancelGuard();
                 if (e.AppId == "com.samsung.tv.csfs")
                 {
                     // Samsung's Home ignores a plain app-control request from here (logged as launched, never shown);
@@ -781,6 +843,8 @@ namespace Launcher
         {
             if (Flag(args, "--get-home")) return GetHome();
             _perf = Flag(args, "--perf");
+            int notifyPort;
+            if (int.TryParse(Arg(args, "--notify-port"), out notifyPort) && notifyPort > 0 && notifyPort < 65536) _notifyPort = notifyPort;
             _dir = ResolveDir(args);
             _logPath = Path.Combine(_dir, "tvlauncher.log");
             _pidPath = Path.Combine(_dir, "tvlauncher.pid");
@@ -819,7 +883,7 @@ namespace Launcher
                 int windowW = Math.Max(new DockLayout(_apps.Length, screenW, screenH).WinW, new DockLayout(_inputs.Length, screenW, screenH).WinW);
                 var layout = new DockLayout(_apps.Length, screenW, screenH, windowW, false, Catalog.GroupStart(_apps));
                 var inputsLayout = new DockLayout(_inputs.Length, screenW, screenH, windowW, true, -1);
-                _appsCtl = new Controller(layout) { PanelEnabled = true };
+                _appsCtl = new Controller(layout) { PanelEnabled = false };   // the row is the inputs: no Source page above it
                 _inputsCtl = new Controller(inputsLayout, PageKind.Panel);
                 _ctl = _appsCtl;
 
@@ -839,7 +903,7 @@ namespace Launcher
                 string res = Path.Combine(AppContext.BaseDirectory, "res");
                 string dumpIcons = Arg(args, "--dump-icons");
                 if (dumpIcons != null && Directory.Exists(dumpIcons)) Dock.DumpIconsTo = dumpIcons;
-                _appsDock = new Dock(_win, layout, _apps, res, Log, Design.HintText, true);
+                _appsDock = new Dock(_win, layout, _apps, res, Log, null, true);   // no "Source" hint
                 _appsDock.Build();
                 _inputsDock = new Dock(_win, inputsLayout, _inputs, res, Log, "Back", false);
                 _inputsDock.Build();
@@ -856,7 +920,7 @@ namespace Launcher
                 string guard = Arg(args, "--kill-on-home");
                 if (guard != null)
                 {
-                    if (Catalog.ValidAppId(guard)) { _guardApp = guard; _guardCmd = GuardCommand(guard); Log("guard: " + guard + " is closed after each Home press: " + _guardCmd); }
+                    if (Catalog.ValidAppId(guard)) { _guardApp = guard; _guardOffPath = GuardOffPath(_dir); _guardCmd = GuardCommand(guard, _guardOffPath); Log("guard: " + guard + " is closed after each Home press: " + _guardCmd); }
                     else Log("guard: bad app id ignored");
                 }
                 SetupInput(args);

@@ -34,11 +34,35 @@ var LIVE = {
 
 // Two pills close the row. Settings sends the System Menu key, which the TV routes to Samsung's own menu app
 // (org.tizen.menu, menu.json); starting csfs would only show Home. The second one goes back to Samsung's Home.
-// The input list is not here: it is one page up in the launcher.
+// The full input list (TV and all four HDMI) is one page up in the launcher.
+// The HDMI inputs in use open the row (HDMI 3 has nothing on it, so it is left out), so a console or set-top box is one press from Home. They switch input the same way
+// as the inputs page (source:N, Samsung's input number: HDMI 1-4 are 13-16) and use the dock's own HDMI icons;
+// HDMI 1 is the NVIDIA Shield TV, HDMI 2 a Super Nintendo and HDMI 4 the Xbox, so they are named and drawn as those
+// (res/icons/shield.png, snes.png, xbox.png).
+var LEAD_ROWS = [
+    'netflix\tNetflix\tsource:13',
+    'plex\tPlex\tsource:13',
+    'shield\tShield\tsource:13',
+    'snes\tSNES\tsource:14',
+    'xbox\tXbox\tsource:16'
+];
+// What Vetro adds when a tile is pressed, beyond the tile's own job: the dock reports each press to
+// POST /dock/pressed and the message listed here for that tile goes out on the MQTT connection.
+// Netflix and Plex switch to the Shield's input (HDMI 1) like the Shield tile, and also tell the home automation
+// to open that app on the Shield.
+var TILE_MESSAGES = {
+    netflix: {topic: 'vetro', payload: JSON.stringify({action: 'change_input', input: 'netflix'})},
+    plex: {topic: 'vetro', payload: JSON.stringify({action: 'change_input', input: 'plex'})}
+};
+function tileMessage(slug) { return Object.prototype.hasOwnProperty.call(TILE_MESSAGES, slug) ? TILE_MESSAGES[slug] : null; }
+
 var SYSTEM_ROWS = [
     'settings\tSettings\tkey:XF86SysMenu\torg.tizen.menu',
     'samsunghome\tSamsung Home\tsys:com.samsung.tv.csfs'
 ];
+// Slugs the fixed rows use; an app with the same name gets a numbered one instead.
+var RESERVED = {source: true};
+LEAD_ROWS.concat(SYSTEM_ROWS).forEach(function (r) { RESERVED[r.split('\t')[0]] = true; });
 
 function script() {
     var sizes = '224x224 304x304 152x152 104x104 icon';
@@ -110,13 +134,13 @@ function build(parsed, options) {
     var entries = [], skipped = [], slugs = {};
     function add(slug, label, appId, icon) {
         var base = slug, n = 2;
-        while (slugs[slug] || slug === 'source' || slug === 'settings') slug = base.slice(0, 36) + '-' + n++;
+        while (slugs[slug] || RESERVED[slug]) slug = base.slice(0, 36) + '-' + n++;
         slugs[slug] = true;
         entries.push({slug: slug, label: label, appId: appId, icon: icon || null, killFirst: null});
         return entries[entries.length - 1];
     }
     parsed.order.forEach(function (item) {
-        if (entries.length >= MAX_ENTRIES - SYSTEM_ROWS.length) { skipped.push({item: item, reason: 'The dock holds ' + MAX_ENTRIES + ' entries'}); return; }
+        if (entries.length >= MAX_ENTRIES - LEAD_ROWS.length - SYSTEM_ROWS.length) { skipped.push({item: item, reason: 'The dock holds ' + MAX_ENTRIES + ' entries'}); return; }
         var kind = item.slice(0, item.indexOf('@')), ident = item.slice(item.indexOf('@') + 1);
         if (kind === 's/livetv') {
             var live = LIVE[ident];
@@ -145,7 +169,7 @@ function tsv(built) {
     built.entries.forEach(function (e) {
         lines.push([e.slug, e.label, e.appId, '', e.icon || '', e.killFirst || ''].join('\t').replace(/\t+$/, ''));
     });
-    return lines.concat(SYSTEM_ROWS).join('\n') + '\n';
+    return [lines[0]].concat(LEAD_ROWS, lines.slice(1), SYSTEM_ROWS).join('\n') + '\n';
 }
 
 // The registry can point at an icon that is no longer there (TV Plus does). One more read-only
@@ -170,9 +194,11 @@ function existing(execute, built) {
     }, function () { built.entries.forEach(function (e) { delete e.altIcon; }); return built; });
 }
 
-// Reads the TV and returns {tsv, count, skipped}. Throws when the Home row cannot be read at all,
-// because a dock with no apps is worse than none.
+// Returns {tsv, count, skipped}. With showApps off (the default) the dock holds only the HDMI inputs and the two
+// pills, and the TV is not read at all. With it on, the Home row's apps follow the inputs; that read throws when the
+// Home row cannot be read at all, because a dock with no apps is worse than none.
 function load(execute, options) {
+    if (!module.exports.showApps) return Promise.resolve({tsv: tsv({entries: []}), count: 0, skipped: []});
     return execute(wrap(script()), 20000).then(function (r) {
         if (r.exit_code || r.timed_out) throw new Error(r.stderr || 'Home data unavailable');
         var parsed = parse(r.stdout);
@@ -185,4 +211,4 @@ function load(execute, options) {
     });
 }
 
-module.exports = {iconPathOk: iconOk, COBALT_YOUTUBE: COBALT_YOUTUBE, load: load, parse: parse, build: build, tsv: tsv, script: script, slugify: slugify, cleanLabel: cleanLabel};
+module.exports = {showApps: false, tileMessage: tileMessage, iconPathOk: iconOk, COBALT_YOUTUBE: COBALT_YOUTUBE, load: load, parse: parse, build: build, tsv: tsv, script: script, slugify: slugify, cleanLabel: cleanLabel};

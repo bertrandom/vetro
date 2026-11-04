@@ -28,7 +28,7 @@ assert.ok(!parsed.icons.bbb, 'an icon outside the allowed folders is refused');
 assert.ok(!parsed.packageIcons.evil, 'a package icon with parent directories is refused');
 
 const built = catalog.build(parsed);
-assert.deepEqual(built.entries.map(e => e.slug), ['tvplus', 'livetv', 'netflix', 'disney', 'netflix-2'], 'Home order, unique slugs');
+assert.deepEqual(built.entries.map(e => e.slug), ['tvplus', 'livetv', 'netflix-2', 'disney', 'netflix-3'], 'Home order, unique slugs; the Netflix tile keeps "netflix"');
 assert.equal(built.entries[0].appId, 'org.tizen.tv-viewer');
 assert.equal(built.entries[0].icon, '/opt/usr/apps/com.samsung.tv.tvplus/shared/res/tvplus.png', 'TV Plus uses its package icon');
 assert.equal(built.entries[1].icon, null, 'live TV has none: the dock draws its own');
@@ -41,10 +41,17 @@ assert.deepEqual(built.skipped.map(s => s.item + ':' + s.reason), [
 const text = catalog.tsv(built);
 const lines = text.trim().split('\n');
 assert.ok(lines[0].startsWith('#'));
-assert.equal(lines[1], 'tvplus\tSamsung TV Plus\torg.tizen.tv-viewer\t\t/opt/usr/apps/com.samsung.tv.tvplus/shared/res/tvplus.png');
-assert.equal(lines[2], 'livetv\tLive TV\torg.tizen.tv-viewer', 'no icon: no trailing tabs');
+assert.deepEqual(lines.slice(1, 6), ['netflix\tNetflix\tsource:13', 'plex\tPlex\tsource:13', 'shield\tShield\tsource:13', 'snes\tSNES\tsource:14', 'xbox\tXbox\tsource:16'], 'the inputs open the row: Netflix and Plex (both on the Shield), the Shield, the SNES and the Xbox');
+assert.equal(lines[6], 'tvplus\tSamsung TV Plus\torg.tizen.tv-viewer\t\t/opt/usr/apps/com.samsung.tv.tvplus/shared/res/tvplus.png');
+assert.equal(lines[7], 'livetv\tLive TV\torg.tizen.tv-viewer', 'no icon: no trailing tabs');
 assert.deepEqual(lines.slice(-2), ['settings\tSettings\tkey:XF86SysMenu\torg.tizen.menu', 'samsunghome\tSamsung Home\tsys:com.samsung.tv.csfs'], 'two pills close the row: Settings (the System Menu key) and Samsung Home');
 lines.slice(1).forEach(l => assert.ok(l.split('\t').length >= 3, 'every line has slug, label and app id: ' + l));
+
+// Tiles that also send an MQTT message when pressed
+assert.deepEqual(catalog.tileMessage('plex'), {topic: 'vetro', payload: '{"action":"change_input","input":"plex"}'});
+assert.deepEqual(catalog.tileMessage('netflix'), {topic: 'vetro', payload: '{"action":"change_input","input":"netflix"}'});
+assert.equal(catalog.tileMessage('shield'), null, 'other tiles send nothing');
+assert.equal(catalog.tileMessage('__proto__'), null, 'only listed tiles');
 
 // Names that would break the file or the dock
 assert.equal(catalog.slugify('Disney+'), 'disney');
@@ -54,15 +61,17 @@ assert.equal(catalog.cleanLabel('   ', 'fallback'), 'fallback');
 assert.equal(catalog.cleanLabel('x'.repeat(100), 'f').length, 40);
 const reserved = catalog.build({order: ['d/webapp@s'], registry: {s: {title: 'Settings', appId: 'com.example.settings', hidden: false}}, icons: {}, packageIcons: {}});
 assert.equal(reserved.entries[0].slug, 'settings-2', 'an app called Settings does not take the system entry\'s slug');
+assert.equal(catalog.build({order: ['d/webapp@h'], registry: {h: {title: 'Shield', appId: 'com.example.h', hidden: false}}, icons: {}, packageIcons: {}}).entries[0].slug, 'shield-2', 'nor the HDMI entry\'s');
 const badId = catalog.build({order: ['d/webapp@s'], registry: {s: {title: 'X', appId: 'bad id;rm', hidden: false}}, icons: {}, packageIcons: {}});
 assert.equal(badId.entries.length, 0, 'an app id that is not plain is never written to the file');
 
-// The dock holds 40 entries including the three system ones
+// The dock holds 40 entries including the five input tiles and the two system pills
 const many = {order: [], registry: {}, icons: {}, packageIcons: {}};
 for (let i = 0; i < 60; i++) { many.order.push('d/webapp@a' + i); many.registry['a' + i] = {title: 'App ' + i, appId: 'x.app' + i, hidden: false}; }
 const capped = catalog.build(many);
-assert.equal(capped.entries.length, 38);
-assert.equal(capped.skipped.length, 22);
+assert.equal(capped.entries.length, 33);
+assert.equal(capped.skipped.length, 27);
+assert.equal(catalog.tsv(capped).trim().split('\n').length - 1, 40, 'the written file never goes past the dock\'s limit');
 
 // Fix TizenTube: YouTube's icon, and Samsung's YouTube closed first
 const tt = {order: ['d/webapp@tt', 'd/webapp@aaa'], icons: {tt: '/opt/share/webappservice/apps_icon/all/tt/icon.png', yt: '/opt/share/webappservice/apps_icon/all/yt/224x224.png', aaa: '/opt/share/webappservice/apps_icon/all/aaa/224x224.png'}, packageIcons: {},
@@ -76,8 +85,8 @@ assert.equal(fixed.entries[0].icon, '/opt/share/webappservice/apps_icon/all/yt/2
 assert.equal(fixed.entries[0].label, 'TizenTube', 'the name is left alone');
 assert.equal(fixed.entries[1].killFirst, null, 'other apps are untouched');
 assert.equal(fixed.entries[1].icon, plain.entries[1].icon);
-assert.equal(catalog.tsv(fixed).split('\n')[1], 'tizentube\tTizenTube\txvvl3S1TT1.TizenTubeStandalone\t\t/opt/share/webappservice/apps_icon/all/yt/224x224.png\tcom.samsung.tv.cobalt-yt');
-assert.equal(catalog.tsv(plain).split('\n')[1].split('\t').length, 5, 'no sixth column when off');
+assert.equal(catalog.tsv(fixed).split('\n')[6], 'tizentube\tTizenTube\txvvl3S1TT1.TizenTubeStandalone\t\t/opt/share/webappservice/apps_icon/all/yt/224x224.png\tcom.samsung.tv.cobalt-yt');
+assert.equal(catalog.tsv(plain).split('\n')[6].split('\t').length, 5, 'no sixth column when off');
 const noYt = catalog.build(Object.assign({}, tt, {icons: {tt: tt.icons.tt}}), {fixTizenTube: true});
 assert.equal(noYt.entries[0].killFirst, 'com.samsung.tv.cobalt-yt', 'still closes YouTube first');
 assert.equal(noYt.entries[0].icon, tt.icons.tt, 'without a YouTube icon the app keeps its own');
@@ -93,6 +102,15 @@ assert.ok(noYt.skipped.some(x => /No YouTube icon/.test(x.reason)));
         const out = (script.match(/'[^']+'/g) || []).map(p => p.slice(1, -1)).filter(exists).map(p => 'OK|' + p).join('\n');
         return {exit_code: 0, stdout: out};
     };
+    // Default: only the HDMI inputs and the two pills, and the TV is not read
+    let calls = 0;
+    const hdmiOnly = await catalog.load(async () => { calls++; return {exit_code: 1}; });
+    assert.equal(calls, 0, 'nothing is read from the TV');
+    assert.equal(hdmiOnly.count, 0);
+    assert.deepEqual(hdmiOnly.tsv.trim().split('\n').slice(1).map(l => l.split('\t')[0]), ['netflix', 'plex', 'shield', 'snes', 'xbox', 'settings', 'samsunghome']);
+
+    // With the apps turned back on, the Home row follows the inputs
+    catalog.showApps = true;
     const seen = [];
     const ok = await catalog.load(run({exit_code: 0, stdout: OUTPUT}, p => p !== missing));
     assert.equal(ok.count, 5);
