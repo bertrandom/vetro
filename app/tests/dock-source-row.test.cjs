@@ -1,4 +1,6 @@
 'use strict';
+// 0.7.0's own row: the fork's fixed input tiles are off here (dock-catalog-tiles.test.cjs covers them).
+require('../service/dock-catalog.js').fixedTiles = false;
 // Sources in the user's row: every input of the Sources page carries its row key, every input can be resolved in the row (hold OK on
 // Sources adds it), whatever showHomeSources says, and the whole path from the launcher's POST to the three lists works. Synthetic data.
 const assert = require('assert').strict;

@@ -109,7 +109,30 @@ var SAMSUNG_STORE_ROW = 'store\tApp store\tsys:com.samsung.tv.store';
 var TV_STORE = 'A2STVStore.Store';
 var TV_STORE_ROW = 'tvstore\tTV-Store\tsys:' + TV_STORE + '\tcom.samsung.tv.store';
 var APP_STORES = ['tvstore', 'samsung'];
+// The row opens with tiles for the HDMI inputs in use, named and drawn after the device on them (HDMI 3 has nothing on it, so it is
+// left out), so a console or set-top box is one press from Home. They switch input the same way as the Sources page (source:N,
+// Samsung's input number: HDMI 1-4 are 13-16) and use the launcher's own pictures (res/icons/<slug>.png). HDMI 1 is the NVIDIA
+// Shield TV, HDMI 2 a Super Nintendo and HDMI 4 the Xbox; Netflix and Plex also go to the Shield. They carry no row key, so the
+// row cannot be edited from the launcher (RowEdit.CanEdit): the row is these tiles, then the pills. fixedTiles off gives 0.7.0's own
+// row (Samsung's Home row under the user's order), which the upstream tests cover.
+var LEAD_ROWS = [
+    'netflix\tNetflix\tsource:13',
+    'plex\tPlex\tsource:13',
+    'shield\tShield\tsource:13',
+    'snes\tSNES\tsource:14',
+    'xbox\tXbox\tsource:16'
+];
+// What Vetro adds when a tile is pressed, beyond the tile's own job: the launcher reports each press to POST /dock/pressed
+// and the message listed here for that tile goes out on the MQTT connection. Netflix and Plex switch to the Shield's input
+// (HDMI 1) like the Shield tile, and also tell the home automation to open that app on the Shield.
+var TILE_MESSAGES = {
+    netflix: {topic: 'vetro', payload: JSON.stringify({action: 'change_input', input: 'netflix'})},
+    plex: {topic: 'vetro', payload: JSON.stringify({action: 'change_input', input: 'plex'})}
+};
+function tileMessage(slug) { return Object.prototype.hasOwnProperty.call(TILE_MESSAGES, slug) ? TILE_MESSAGES[slug] : null; }
 var RESERVED_SLUGS = ['source', 'settings', 'allapps', 'samsunghome', 'store', 'tvstore'];
+// With the fixed tiles on, an app of the same name (Netflix, Plex) gets a numbered slug, so each tile keeps its own picture.
+var LEAD_SLUGS = LEAD_ROWS.map(function (r) { return r.split('\t')[0]; });
 // A row key: what the user's own order and hidden list refer to (app:<id>, live:<TVPLUS|RF>, source:<type>).
 var ROW_KEY = /^(?:app:[A-Za-z0-9_.-]{1,120}|live:[A-Z]{1,12}|source:\d{1,5})$/;
 var VETRO_APP = /^vetrotvapp(\.|$)/;
@@ -248,7 +271,7 @@ function build(parsed, options) {
     inputs.forEach(function (source) { inputSlugs[source.slug] = true; });
     function make(slug, label, appId, icon, key) {
         var base = slug, n = 2, input = typeof key === 'string' && key.indexOf('source:') === 0;
-        while (slugs[slug] || RESERVED_SLUGS.indexOf(slug) >= 0 || (!input && inputSlugs[slug])) slug = base.slice(0, 36) + '-' + n++;
+        while (slugs[slug] || RESERVED_SLUGS.indexOf(slug) >= 0 || (module.exports.fixedTiles && LEAD_SLUGS.indexOf(slug) >= 0) || (!input && inputSlugs[slug])) slug = base.slice(0, 36) + '-' + n++;
         slugs[slug] = true;
         var made = {slug: slug, label: label, appId: appId, icon: icon || null, killFirst: null, key: key || (appId ? 'app:' + appId : null)};
         if (appId && parsed.hbbtvLinks && parsed.hbbtvLinks[appId]) made.hbbtvLink = parsed.hbbtvLinks[appId];
@@ -386,7 +409,9 @@ function inputsTsv(built) {
 
 function tsv(built) {
     var lines = ['# written by Vetro from the TV\'s own Home row; do not edit, it is rebuilt every time the dock starts'];
-    built.entries.forEach(function (e) {
+    // With fixedTiles on (the default) the row is the input tiles and the pills; All apps and Sources still list everything.
+    if (module.exports.fixedTiles) lines = lines.concat(LEAD_ROWS);
+    else built.entries.forEach(function (e) {
         lines.push(entryLine(e));
     });
     var system = SYSTEM_ROWS.map(function (row) {
@@ -433,11 +458,11 @@ function load(execute, options) {
         var filteredSources = options.showHomeSources !== true && parsed.order.some(function (entry) { return /^s\/source\.layer\.hdmi@HDMI[1-4]$/.test(entry); });
         if (!built.entries.length && !filteredSources) throw new Error('None of the Home row apps could be matched in the registry');
         return existing(execute, built).then(function (b) {
-            return {tsv: tsv(b), inputsTsv: inputsTsv(b), allAppsTsv: allAppsTsv(b), count: b.entries.length, skipped: b.skipped, samsungKeys: b.samsungKeys, rowKeys: b.entries.map(function (e) { return e.key; }),
+            return {tsv: tsv(b), inputsTsv: inputsTsv(b), allAppsTsv: allAppsTsv(b), count: module.exports.fixedTiles ? 0 : b.entries.length, skipped: b.skipped, samsungKeys: b.samsungKeys, rowKeys: b.entries.map(function (e) { return e.key; }),
                 appStore: b.appStore, tvStoreInstalled: b.tvStoreInstalled};
         });
     });
 }
 
-module.exports = {hbbtvLink: hbbtvLink, ROW_KEY: ROW_KEY, TV_STORE: TV_STORE, APP_STORES: APP_STORES, allAppsTsv: allAppsTsv, sourceEntries: sourceEntries, inputsTsv: inputsTsv, iconPathOk: iconOk, COBALT_YOUTUBE: COBALT_YOUTUBE, load: load, parse: parse, build: build, tsv: tsv, script: script, slugify: slugify, cleanLabel: cleanLabel};
+module.exports = {fixedTiles: true, tileMessage: tileMessage, LEAD_ROWS: LEAD_ROWS, hbbtvLink: hbbtvLink, ROW_KEY: ROW_KEY, TV_STORE: TV_STORE, APP_STORES: APP_STORES, allAppsTsv: allAppsTsv, sourceEntries: sourceEntries, inputsTsv: inputsTsv, iconPathOk: iconOk, COBALT_YOUTUBE: COBALT_YOUTUBE, load: load, parse: parse, build: build, tsv: tsv, script: script, slugify: slugify, cleanLabel: cleanLabel};
 

@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
 using System.Runtime.InteropServices;
 using Launcher.Core;
 using Launcher.Native;
@@ -2367,6 +2370,40 @@ namespace Launcher
             if (HomeGuard.ShouldCancel(_guardApps, e.AppId)) CancelGuard();
             HideDock();
             _pendingLaunch = e;
+            NotifyPressed(e);
+        }
+
+        // Vetro (127.0.0.1, --service-port) is told which tile was pressed, so it can add what the launcher cannot do itself,
+        // such as publishing an MQTT message (POST /dock/pressed). It runs on a pool thread with short timeouts, so a slow or
+        // stopped Vetro never holds up the dock.
+        private static void NotifyPressed(AppEntry e)
+        {
+            int port = ShardLaunch.ServicePort;
+            string slug = e.Slug;   // letters, digits, '-' and '_' only (Catalog.IsSlug): safe inside the JSON below
+            if (port <= 0 || !Catalog.ValidSlug(slug)) return;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    byte[] body = Encoding.ASCII.GetBytes("{\"slug\":\"" + slug + "\"}");
+                    byte[] head = Encoding.ASCII.GetBytes("POST /dock/pressed HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: "
+                        + body.Length + "\r\nConnection: close\r\n\r\n");
+                    using (var c = new TcpClient())
+                    {
+                        if (!c.ConnectAsync("127.0.0.1", port).Wait(1500)) { Log("notify " + slug + ": no answer from Vetro"); return; }
+                        c.SendTimeout = 1500; c.ReceiveTimeout = 3000;
+                        NetworkStream ns = c.GetStream();
+                        ns.Write(head, 0, head.Length);
+                        ns.Write(body, 0, body.Length);
+                        byte[] buf = new byte[64];
+                        int n = ns.Read(buf, 0, buf.Length);
+                        string status = Encoding.ASCII.GetString(buf, 0, n);
+                        int eol = status.IndexOf('\r');
+                        Log("notify " + slug + ": " + (eol > 0 ? status.Substring(0, eol) : status));
+                    }
+                }
+                catch (Exception ex) { Log("notify " + slug + ": " + ex.Message); }
+            });
         }
 
         private const string SourceIconDir = "/usr/apps/com.samsung.tv.theme-resource/shared/res/org.tizen.menu/Settings_Popup/device_icon/";

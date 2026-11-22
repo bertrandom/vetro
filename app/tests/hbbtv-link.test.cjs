@@ -1,4 +1,6 @@
 'use strict';
+// 0.7.0's own row: the fork's fixed input tiles are off here (dock-catalog-tiles.test.cjs covers them).
+require('../service/dock-catalog.js').fixedTiles = false;
 // #200: apps that are only an HbbTV link (SVT Play) open through the HbbTV app, as Samsung's Home opens them.
 const assert = require('assert').strict;
 const fs = require('fs');

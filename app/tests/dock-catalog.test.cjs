@@ -1,4 +1,6 @@
 'use strict';
+// 0.7.0's own row: the fork's fixed input tiles are off here (dock-catalog-tiles.test.cjs covers them).
+require('../service/dock-catalog.js').fixedTiles = false;
 const assert = require('assert').strict;
 const catalog = require('../service/dock-catalog.js');
 

@@ -1164,6 +1164,19 @@ function handleInput(req,res){
         });
     });
 }
+// The launcher reports each tile press here; a tile with an MQTT message (dock-catalog.js) publishes it.
+// Only the TV itself may call it, since it sends messages to the broker.
+function handleDockPressed(req,res){
+    if (!auth.fromThisTv(req.socket && req.socket.remoteAddress)) return serveJson(res,{error:'Tile presses are accepted from the TV only'},403);
+    readJsonBody(req,res,function(p){
+        if(typeof p.slug!=='string'||!/^[a-z0-9_-]{1,40}$/.test(p.slug))return serveJson(res,{error:'slug required'},400);
+        var m=require('./dock-catalog.js').tileMessage(p.slug);
+        if(!m)return serveJson(res,{ok:true,sent:0});
+        try{bridge.publish(m.topic,m.payload);bridge.event('trigger','Launcher tile '+p.slug+': message sent to '+m.topic);serveJson(res,{ok:true,sent:1});}
+        catch(e){bridge.event('error','Launcher tile '+p.slug+': '+e.message);serveJson(res,{ok:false,error:e.message},503);}
+    });
+}
+
 function handleRemapRun(req,res){readJsonBody(req,res,function(p){
     if(typeof p.type!=='string'||typeof p.value!=='string')return serveJson(res,{error:'type and value required'},400);
     runActions(remap.resolve(remapStore.rules,p.type,p.value,p.payload)).then(function(r){serveJson(res,r);}).catch(function(e){serveJson(res,{ok:false,error:e.message},503);});
@@ -1244,6 +1257,7 @@ var server = http.createServer(function (req, res) {
         if (url === '/screen/control') return handleScreenControl(req, res);
         if (url === '/remap') return handleRemap(req, res);
         if (url === '/remap/run') return handleRemapRun(req, res);
+        if (url === '/dock/pressed') return handleDockPressed(req, res);
         return serveJson(res, { error: 'POST not supported here' }, 405);
     }
     if (url === '/dns') return dnsFilter.status().then(function(d){serveJson(res,d)}).catch(function(e){serveJson(res,{error:e.message},503)});

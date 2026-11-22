@@ -1,4 +1,6 @@
 'use strict';
+// 0.7.0's own row: the fork's fixed input tiles are off here (dock-catalog-tiles.test.cjs covers them).
+require('../service/dock-catalog.js').fixedTiles = false;
 // The user's own launcher row (moved, taken out, added from All apps) laid over Samsung's Home row, and the All apps list.
 // Synthetic apps only.
 const assert = require('assert').strict;

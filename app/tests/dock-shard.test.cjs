@@ -1,4 +1,6 @@
 'use strict';
+// 0.7.0's own row: the fork's fixed input tiles are off here (dock-catalog-tiles.test.cjs covers them).
+require('../service/dock-catalog.js').fixedTiles = false;
 // A plugin that takes over a launcher tile: the list marks it, the launcher asks Vetro to start it, Vetro asks the plugin and
 // falls back to the plain launch. The plugin never writes anything into the list the dock reads.
 const assert = require('assert').strict, fs = require('fs'), os = require('os'), path = require('path');
